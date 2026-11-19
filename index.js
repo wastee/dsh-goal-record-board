@@ -3,9 +3,11 @@
  *
  * The agent calls `goal_record` at the end of a goal round with three fields:
  * problem, solution, result. Every call is already committed as a durable
- * `tool/call` session event by the framework. A session projection folds those
- * events into a plain-JSON list and publishes it as a Client view. Nothing is
- * written to a second store, so the board is reconstructable from the log.
+ * session event by the framework, either as a direct `tool/call` or, when the
+ * model reaches it through `run_code`, as a `tool/ptc-dispatch` sub-event. A
+ * session projection folds both shapes into a plain-JSON list and publishes it
+ * as a Client view. Nothing is written to a second store, so the board is
+ * reconstructable from the log.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { z } from 'zod'
@@ -27,45 +29,78 @@ const recordSchema = z.object({
   result: z.string(),
 })
 
-const stateSchema = z.object({ records: z.array(recordSchema) })
+/** callTurns maps a top-level tool/call callId to the turn it happened in. */
+const stateSchema = z.object({
+  records: z.array(recordSchema),
+  callTurns: z.record(z.string(), z.number()),
+})
 const viewSchema = z.array(recordSchema)
 
+/** Only goal_record calls with three non-empty fields become board records. */
+function appendRecord(state, event, args, id, turn) {
+  if (args === null || typeof args !== 'object') return state
+  const text = value => typeof value === 'string' ? value.trim() : ''
+  const problem = text(args.problem)
+  const solution = text(args.solution)
+  const result = text(args.result)
+  if (problem === '' || solution === '' || result === '') return state
+  if (state.records.some(record => record.id === id)) return state
+  return {
+    ...state,
+    records: [...state.records, {
+      id,
+      turn,
+      seq: event.seq,
+      time: event.time,
+      problem,
+      solution,
+      result,
+    }],
+  }
+}
+
 /**
- * Pure fold: only `goal_record` calls with three non-empty fields become records.
- * The call id deduplicates replay and repeated projection reads.
+ * Pure fold over two log shapes: a direct `tool/call` and a PTC sub-call
+ * (`tool/ptc-dispatch`) emitted when the model reaches goal_record through
+ * run_code. The record id deduplicates both; the callId -> turn map supplies
+ * the turn that a PTC sub-event does not carry.
  */
-const projection = {
+export const projection = {
   key: PROJECTION_KEY,
-  stateVersion: 1,
+  stateVersion: 2,
   stateSchema,
-  init: () => ({ records: [] }),
+  init: () => ({ records: [], callTurns: {} }),
   apply(state, event) {
-    if (event.type !== 'tool/call' || event.data.name !== TOOL_NAME) return state
-    let args
-    try {
-      args = JSON.parse(event.data.arguments)
-    } catch {
-      return state
+    if (event.type === 'tool/call') {
+      // Remember the turn of every top-level call so a later PTC sub-event
+      // can recover it through rootCallId.
+      const callId = event.data.callId
+      const turn = event.data.turn
+      const callTurns = state.callTurns ?? {}
+      if (callId !== undefined && callId !== null && typeof turn === 'number') {
+        state = { ...state, callTurns: { ...callTurns, [String(callId)]: turn } }
+      }
+      if (event.data.name !== TOOL_NAME) return state
+      let args
+      try {
+        args = JSON.parse(event.data.arguments)
+      } catch {
+        return state
+      }
+      return appendRecord(state, event, args, String(callId), typeof turn === 'number' ? turn : 0)
     }
-    if (args === null || typeof args !== 'object') return state
-    const text = value => typeof value === 'string' ? value.trim() : ''
-    const problem = text(args.problem)
-    const solution = text(args.solution)
-    const result = text(args.result)
-    if (problem === '' || solution === '' || result === '') return state
-    const id = String(event.data.callId)
-    if (state.records.some(record => record.id === id)) return state
-    return {
-      records: [...state.records, {
-        id,
-        turn: event.data.turn,
-        seq: event.seq,
-        time: event.time,
-        problem,
-        solution,
-        result,
-      }],
+
+    if (event.type === 'tool/ptc-dispatch') {
+      if (event.data.name !== TOOL_NAME) return state
+      // A PTC dispatch already carries arguments as an object, no JSON.parse.
+      const args = event.data.arguments
+      const id = String(event.data.subCallId)
+      const rootCallId = String(event.data.rootCallId)
+      const turn = (state.callTurns ?? {})[rootCallId] ?? 0
+      return appendRecord(state, event, args, id, turn)
     }
+
+    return state
   },
   wire: { viewSchema, view: state => state.records },
 }

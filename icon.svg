@@ -1,0 +1,19 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="6" y="8" width="24" height="5" rx="2.5" fill="url(#grb-a)" />
+  <rect x="6" y="15.5" width="24" height="5" rx="2.5" fill="url(#grb-b)" />
+  <rect x="6" y="23" width="16" height="5" rx="2.5" fill="url(#grb-c)" />
+  <defs>
+    <linearGradient id="grb-a" x1="6" y1="10.5" x2="30" y2="10.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7AC2FF" />
+      <stop offset="1" stop-color="#4A65E8" />
+    </linearGradient>
+    <linearGradient id="grb-b" x1="6" y1="18" x2="30" y2="18" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6FAEF6" />
+      <stop offset="1" stop-color="#4A6FE0" />
+    </linearGradient>
+    <linearGradient id="grb-c" x1="6" y1="25.5" x2="22" y2="25.5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5F9CE8" />
+      <stop offset="1" stop-color="#3F5EC8" />
+    </linearGradient>
+  </defs>
+</svg>

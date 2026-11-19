@@ -1,11 +1,10 @@
-name: 发布 Release 与 npm 包
+name: 发布 Release 联动 npm 发包
 
-# 推送 v* 标签时触发，例如：git tag v1.0.0 && git push origin v1.0.0
-# 标签名必须与 package.json 里的 version 一致（v1.0.0 对应 1.0.0）。
+# 在 GitHub 上发布 Release（点 Publish release）时触发，自动把包发到 npm。
+# Release 的 tag 必须与 package.json 里的 version 一致（v1.0.0 对应 1.0.0）。
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -15,7 +14,7 @@ jobs:
     name: 校验版本、发布 npm 并创建 Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - name: 检出代码
@@ -51,7 +50,7 @@ jobs:
         id: version
         run: |
           set -eu
-          TAG="${GITHUB_REF_NAME}"
+          TAG="${{ github.event.release.tag_name }}"
           PKG_VERSION="$(node -p "require('./package.json').version")"
           echo "标签: $TAG，package.json 版本: $PKG_VERSION"
           if [ "$TAG" != "v${PKG_VERSION}" ]; then
@@ -83,15 +82,3 @@ jobs:
         run: |
           set -eu
           npm publish --access public
-
-      - name: 创建 GitHub Release 并上传 tarball
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-          TARBALL: ${{ steps.pack.outputs.tarball }}
-        run: |
-          set -eu
-          gh release create "$TAG" "$TARBALL" \
-            --title "$TAG" \
-            --generate-notes \
-            --notes "安装：dsh plugin add @wastee/dsh-goal-record-board"

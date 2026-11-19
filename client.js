@@ -8,12 +8,12 @@
  * it expands a drawer with exactly three fields.
  */
 window.__ModuleLoader__.load({
-  id: '@local/goal-record-board',
+  id: '@wastee/dsh-goal-record-board',
   factory(require) {
     const React = require('react')
     const h = React.createElement
 
-    const TAB_ID = '@local/goal-record-board'
+    const TAB_ID = '@wastee/dsh-goal-record-board'
     const TAB_KIND = 'goal-record-board'
     const NS = 'goalRecordBoard'
 

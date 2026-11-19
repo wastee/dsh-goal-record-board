@@ -1,3 +1,3 @@
 - insert:
     - id: goal-record-board
-      name: '@local/goal-record-board'
+      name: '@wastee/dsh-goal-record-board'

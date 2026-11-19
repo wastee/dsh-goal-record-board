@@ -1,9 +1,21 @@
 {
-  "name": "@local/goal-record-board",
+  "name": "@wastee/dsh-goal-record-board",
   "version": "1.0.0",
-  "private": true,
-  "type": "module",
   "description": "把目标每个轮次遇到的问题、采用的方案和取得的成果记录到右栏看板，点击进入抽屉查看。",
+  "type": "module",
+  "keywords": ["dsh", "dsh-plugin", "goal", "board", "session"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wastee/dsh-goal-record-board.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wastee/dsh-goal-record-board/issues"
+  },
+  "homepage": "https://github.com/wastee/dsh-goal-record-board#readme",
+  "engines": {
+    "dsh": ">=0.2.0 <0.3.0"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

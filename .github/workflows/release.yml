@@ -1,0 +1,84 @@
+name: 发布 Release 与 npm 包
+
+# 推送 v* 标签时触发，例如：git tag v1.0.0 && git push origin v1.0.0
+# 标签名必须与 package.json 里的 version 一致（v1.0.0 对应 1.0.0）。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: 校验版本、发布 npm 并创建 Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Node.js 并配置 npm 源
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: 校验标签与包版本一致
+        id: version
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "标签: $TAG，package.json 版本: $PKG_VERSION"
+          if [ "$TAG" != "v${PKG_VERSION}" ]; then
+            echo "::error::标签 $TAG 与包版本 $PKG_VERSION 不一致，标签应为 v${PKG_VERSION}"
+            exit 1
+          fi
+          echo "version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: 校验 manifest 可发布
+        run: |
+          set -eu
+          node -e "
+            const p = require('./package.json');
+            if (p.private) throw new Error('package.json 仍为 private，不能发布');
+            if (!p.dsh || !p.dsh.bundle) throw new Error('缺少 dsh.bundle 声明');
+            console.log('manifest 校验通过:', p.name, p.version);
+          "
+
+      - name: 打包 tarball
+        id: pack
+        run: |
+          set -eu
+          TARBALL="$(npm pack --silent)"
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+          echo "打包完成: $TARBALL"
+          tar -tzf "$TARBALL"
+
+      - name: 发布到 npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "::error::缺少 secrets.NPM_TOKEN，请在仓库 Settings → Secrets and variables → Actions 中添加"
+            exit 1
+          fi
+          npm publish --access public
+
+      - name: 创建 GitHub Release 并上传 tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -eu
+          gh release create "$TAG" "$TARBALL" \
+            --title "$TAG" \
+            --generate-notes \
+            --notes "安装：dsh plugin add @wastee/dsh-goal-record-board"

@@ -16,17 +16,36 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: 检出代码
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: 安装 Node.js 并配置 npm 源
+      - name: 安装 Node.js 并升级 npm
         uses: actions/setup-node@v7
         with:
           node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+      # Node 22 自带 npm 10.x，不满足 Trusted Publishing 的 npm >= 11.15.0，
+      # 因此显式升级到 npm 11（11.x 兼容 Node 22，且满足版本要求）。
+      - name: 升级 npm 到 11.x
+        run: npm install -g npm@^11.15.0
+      # 使用 npm Trusted Publishing（OIDC）：不配置 registry-url、不设置 NODE_AUTH_TOKEN。
+      # 信任关系在 npmjs.com 的包设置里配置：仓库 wastee/dsh-goal-record-board，
+      # workflow 文件 release.yml，允许 publish。
+      - name: 确认 npm 版本满足 OIDC 发布要求
+        run: |
+          set -eu
+          NPM_VERSION="$(npm -v)"
+          echo "npm 版本: $NPM_VERSION"
+          node -e "
+            const [maj, min] = '$NPM_VERSION'.split('.').map(Number);
+            if (maj < 11 || (maj === 11 && min < 15)) {
+              console.error('::error::npm 版本需 >= 11.15.0 才能用 Trusted Publishing');
+              process.exit(1);
+            }
+          "
 
       - name: 校验标签与包版本一致
         id: version
@@ -60,15 +79,9 @@ jobs:
           echo "打包完成: $TARBALL"
           tar -tzf "$TARBALL"
 
-      - name: 发布到 npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: 发布到 npm（Trusted Publishing / OIDC）
         run: |
           set -eu
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "::error::缺少 secrets.NPM_TOKEN，请在仓库 Settings → Secrets and variables → Actions 中添加"
-            exit 1
-          fi
           npm publish --access public
 
       - name: 创建 GitHub Release 并上传 tarball

@@ -23,6 +23,7 @@ window.__ModuleLoader__.load({
       empty: '还没有记录',
       emptyHint: '目标每轮结束后，遇到的问题、采用的方案和取得的成果会记录在这里。',
       round: '第 {n} 轮',
+      roundNote: '来自第 {n} 轮',
       problem: '什么问题',
       solution: '什么方案',
       result: '什么成果',
@@ -34,6 +35,7 @@ window.__ModuleLoader__.load({
       empty: 'No records yet',
       emptyHint: 'When a goal finishes each round, the problem, solution and result it produced are recorded here.',
       round: 'Round {n}',
+      roundNote: 'From round {n}',
       problem: 'Problem',
       solution: 'Solution',
       result: 'Result',
@@ -57,6 +59,15 @@ window.__ModuleLoader__.load({
       return makeT(ctx.get('locale'))
     }
 
+    /** Format an event timestamp as MM-DD HH:mm:ss in the browser's local zone. */
+    function formatTime(ms) {
+      if (typeof ms !== 'number' || !isFinite(ms)) return ''
+      const d = new Date(ms)
+      const pad = value => String(value).padStart(2, '0')
+      return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' '
+        + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+    }
+
     function Field(props) {
       const { label, text } = props
       return h('div', { className: 'grb-field' },
@@ -66,9 +77,9 @@ window.__ModuleLoader__.load({
     }
 
     function Row(props) {
-      const { record, t } = props
+      const { record, t, index } = props
       const [open, setOpen] = React.useState(false)
-      const heading = String(t('round')).replace('{n}', String(record.turn))
+      const timeText = formatTime(record.time)
       return h('div', { className: 'grb-row' + (open ? ' grb-row-open' : '') },
         h('button', {
           type: 'button',
@@ -76,11 +87,12 @@ window.__ModuleLoader__.load({
           'aria-expanded': open,
           onClick: () => setOpen(value => !value),
         },
-          h('span', { className: 'grb-row-index' }, String(record.turn)),
-          h('span', { className: 'grb-row-heading' }, heading),
+          h('span', { className: 'grb-row-index' }, String(index + 1)),
+          h('span', { className: 'grb-row-heading' }, timeText),
           h('span', { className: 'grb-row-chevron', 'aria-hidden': 'true' }, open ? '\u2212' : '+'),
         ),
         open ? h('div', { className: 'grb-drawer' },
+          h('div', { className: 'grb-row-ref' }, String(t('roundNote')).replace('{n}', String(record.turn))),
           h(Field, { label: t('problem'), text: record.problem }),
           h(Field, { label: t('solution'), text: record.solution }),
           h(Field, { label: t('result'), text: record.result }),
@@ -111,8 +123,8 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'grb-root' },
         records.length === 0
           ? h(EmptyState, { t })
-          : h('div', { className: 'grb-list' }, records.map(record =>
-              h(Row, { key: record.id, record, t }))),
+          : h('div', { className: 'grb-list' }, records.map((record, index) =>
+              h(Row, { key: record.id, record, t, index }))),
       )
     }
 
@@ -185,6 +197,7 @@ window.__ModuleLoader__.load({
             ".grb-row-heading{flex:1;min-width:0}",
             ".grb-row-chevron{flex:none;color:var(--dsw-alias-label-tertiary);font-size:15px;line-height:1}",
             ".grb-drawer{margin:0 8px 8px;padding:2px 6px 10px;border-top:.5px solid var(--dsw-alias-border-l2);border-bottom:.5px solid var(--dsw-alias-border-l2);animation:grb-open .16s ease-out}",
+            ".grb-row-ref{padding:8px 2px 2px;font-size:11px;color:var(--dsw-alias-label-tertiary)}",
             "@keyframes grb-open{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}",
             ".grb-field{padding:10px 0}",
             ".grb-field + .grb-field{border-top:.5px solid var(--dsw-alias-border-l1)}",

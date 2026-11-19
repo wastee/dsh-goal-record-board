@@ -1,0 +1,46 @@
+# AI 助手的本地指引与配置，不随插件发布
+AGENTS.md
+.agents/
+CLAUDE.md
+CLAUDE.local.md
+QWEN.md
+GEMINI.md
+CODEX.md
+.claude/
+
+# 环境变量与密钥
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Node.js 依赖与构建产物
+node_modules/
+lib/
+dist/
+*.tsbuildinfo
+*.log
+pnpm-debug.log
+.pnpm-store/
+.cache/
+coverage/
+
+# DSH 运行时产生的本地状态
+.sessions/
+.storages/
+.artifacts/
+.dsh-build/
+.dsh-report/
+.ui-review/
+.playwright-mcp/
+.worktrees/
+worktrees/
+
+# 本地覆盖、临时文件与编辑器配置
+*.local
+tmp/
+.vscode/
+.idea/
+.DS_Store
+*.swp

@@ -3,9 +3,10 @@
  *
  * Entry: a checklist button in the session header's action area opens a
  * right-sidebar tab.
- * The tab body reads `useProjection('goalRecordBoard')`, the per-session list
- * published by the Host projection. Each row is collapsed by default; clicking
- * it expands a drawer with exactly three fields.
+ * The tab body reads the goalRecordBoard projection, the per-session list
+ * published by the Host projection. Records are grouped by turn, newest first;
+ * each row is collapsed to a one-line problem summary and opens a drawer with
+ * the full problem, solution and result.
  */
 window.__ModuleLoader__.load({
   id: '@wastee/dsh-goal-record-board',
@@ -16,18 +17,20 @@ window.__ModuleLoader__.load({
     const TAB_ID = '@wastee/dsh-goal-record-board'
     const TAB_KIND = 'goal-record-board'
     const NS = 'goalRecordBoard'
+    /** Stable empty list for renders without a projection. */
+    const NO_RECORDS = []
 
     const zh = {
       menu: '目标记录看板',
       title: '目标记录看板',
       empty: '还没有记录',
       emptyHint: '目标每轮结束后，遇到的问题、采用的方案和取得的成果会记录在这里。',
-      round: '第 {n} 轮',
-      roundNote: '来自第 {n} 轮',
-      problem: '什么问题',
-      solution: '什么方案',
-      result: '什么成果',
       guide: '每轮的什么问题、什么方案、什么成果',
+      problem: '问题',
+      solution: '方案',
+      result: '成果',
+      roundHeader: '第 {n} 轮',
+      unknownRound: '轮次未知',
       countLine: '{n} 条记录 · {m} 轮',
     }
     const en = {
@@ -35,12 +38,12 @@ window.__ModuleLoader__.load({
       title: 'Goal Record Board',
       empty: 'No records yet',
       emptyHint: 'When a goal finishes each round, the problem, solution and result it produced are recorded here.',
-      round: 'Round {n}',
-      roundNote: 'From round {n}',
+      guide: 'Problem, solution and result for each round',
       problem: 'Problem',
       solution: 'Solution',
       result: 'Result',
-      guide: 'Problem, solution and result for each round',
+      roundHeader: 'Round {n}',
+      unknownRound: 'Unknown round',
       countLine: '{n} records · {m} rounds',
     }
     const dicts = { zh, en, ja: en, es: en, fr: en, de: en, ru: en, pt: en }
@@ -61,22 +64,86 @@ window.__ModuleLoader__.load({
       return makeT(ctx.get('locale'))
     }
 
-    /** Format an event timestamp as MM-DD HH:mm:ss in the browser's local zone. */
-    function formatTime(ms) {
-      if (typeof ms !== 'number' || !isFinite(ms)) return ''
-      const d = new Date(ms)
-      const pad = value => String(value).padStart(2, '0')
-      return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' '
-        + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+    /** Two-digit zero padding for the clock and date parts. */
+    function pad2(value) {
+      return String(value).padStart(2, '0')
     }
 
-    /** Count line text: total records plus distinct turns (unknown turn 0 excluded). */
-    function countText(t, records) {
+    /** Local-zone day key (year-month-day): equal keys mean the same day. */
+    function dayKey(ms) {
+      if (typeof ms !== 'number' || !isFinite(ms)) return ''
+      const d = new Date(ms)
+      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+    }
+
+    /** HH:mm in the browser's local zone, or an empty string for a non-finite timestamp. */
+    function formatClock(ms) {
+      if (typeof ms !== 'number' || !isFinite(ms)) return ''
+      const d = new Date(ms)
+      return pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+    }
+
+    /** MM-DD in the browser's local zone, or an empty string for a non-finite timestamp. */
+    function formatDate(ms) {
+      if (typeof ms !== 'number' || !isFinite(ms)) return ''
+      const d = new Date(ms)
+      return pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+    }
+
+    /**
+     * Group the oldest-first projection into newest-first turn groups: reverse
+     * the array, then keep adjacent records with the same turn together, so a
+     * group is newest first as well.
+     */
+    function groupByTurn(records) {
+      const groups = []
+      for (let index = records.length - 1; index >= 0; index -= 1) {
+        const record = records[index]
+        const group = groups[groups.length - 1]
+        if (group !== undefined && group.turn === record.turn) {
+          group.records.push(record)
+        } else {
+          groups.push({ turn: record.turn, records: [record] })
+        }
+      }
+      return groups
+    }
+
+    /** Collapse text to one line: newlines become spaces and outer blanks go away. */
+    function singleLine(text) {
+      return typeof text === 'string' ? text.replace(/\s*\n\s*/g, ' ').trim() : ''
+    }
+
+    /** Collapsed-row summary: the problem, or the result when the problem is empty. */
+    function summarize(record) {
+      const problem = singleLine(record.problem)
+      return problem !== '' ? problem : singleLine(record.result)
+    }
+
+    /** Total records and distinct turns; turn 0 means unknown and is not counted. */
+    function countRecords(records) {
       const turns = new Set()
       for (const record of records) {
         if (record.turn !== 0) turns.add(record.turn)
       }
-      return String(t('countLine')).replace('{n}', String(records.length)).replace('{m}', String(turns.size))
+      return { total: records.length, rounds: turns.size }
+    }
+
+    /** Fill the count-line template with this projection's two numbers. */
+    function countText(t, records) {
+      const counts = countRecords(records)
+      return String(t('countLine'))
+        .replace('{n}', String(counts.total))
+        .replace('{m}', String(counts.rounds))
+    }
+
+    /** Row clock; a record on another day than its group's newest also shows MM-DD. */
+    function rowTime(record, groupDay) {
+      const clock = formatClock(record.time)
+      if (dayKey(record.time) === groupDay) return clock
+      const date = formatDate(record.time)
+      if (date === '') return clock
+      return clock === '' ? date : date + ' ' + clock
     }
 
     function Field(props) {
@@ -87,34 +154,89 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** Sticky turn heading; the date appears only when the group is not from today. */
+    function GroupHead(props) {
+      const { turn, dateText, t } = props
+      const title = turn === 0
+        ? t('unknownRound')
+        : String(t('roundHeader')).replace('{n}', String(turn))
+      return h('div', { className: 'grb-group-head' },
+        h('span', { className: 'grb-group-title' }, title),
+        dateText === '' ? null : h('span', { className: 'grb-group-date' }, dateText),
+      )
+    }
+
     function Row(props) {
-      const { record, t, index } = props
+      const { record, t, timeText, summary, isNew } = props
       const [open, setOpen] = React.useState(false)
-      const timeText = formatTime(record.time)
-      return h('div', { className: 'grb-row' + (open ? ' grb-row-open' : '') },
+      const drawerId = React.useId()
+      const headRef = React.useRef(null)
+
+      // Escape collapses an open row, moves focus back to its button, and stops
+      // the event so the host page does not also act on it. A collapsed row
+      // leaves Escape alone.
+      const handleKeyDown = event => {
+        if (event.key !== 'Escape' || !open) return
+        event.stopPropagation()
+        setOpen(false)
+        const head = headRef.current
+        if (head !== null) head.focus()
+      }
+
+      return h('div', {
+        className: isNew ? 'grb-row grb-row-new' : 'grb-row',
+        onKeyDown: handleKeyDown,
+      },
         h('button', {
+          ref: headRef,
           type: 'button',
           className: 'grb-row-head',
           'aria-expanded': open,
-          onClick: () => setOpen(value => !value),
+          'aria-controls': drawerId,
+          onClick: () => { setOpen(value => !value) },
         },
-          h('span', { className: 'grb-row-index' }, String(index + 1)),
-          h('span', { className: 'grb-row-heading' }, timeText),
-          h('span', { className: 'grb-row-chevron', 'aria-hidden': 'true' }, open ? '\u2212' : '+'),
+          h('span', { className: 'grb-time' }, timeText),
+          h('span', { className: 'grb-summary' }, summary),
+          h('svg', {
+            className: 'grb-chevron' + (open ? ' grb-chevron-open' : ''),
+            width: 14, height: 14, viewBox: '0 0 16 16',
+            fill: 'none', stroke: 'currentColor', strokeWidth: 1,
+            'aria-hidden': 'true',
+          }, h('path', { d: 'M4 6L7.29289 9.29289C7.68342 9.68342 8.31658 9.68342 8.70711 9.29289L12 6' })),
         ),
-        open ? h('div', { className: 'grb-drawer' },
-          h('div', { className: 'grb-row-ref' }, String(t('roundNote')).replace('{n}', String(record.turn))),
+        // The drawer stays mounted so aria-controls always points at a real
+        // element; hidden keeps it out of layout and the accessibility tree,
+        // and removing hidden restarts the opening animation.
+        h('div', { className: 'grb-drawer', id: drawerId, hidden: !open },
           h(Field, { label: t('problem'), text: record.problem }),
           h(Field, { label: t('solution'), text: record.solution }),
           h(Field, { label: t('result'), text: record.result }),
-        ) : null,
+        ),
+      )
+    }
+
+    function Group(props) {
+      const { group, t, todayKey, freshIds } = props
+      const newest = group.records[0]
+      const newestDay = dayKey(newest.time)
+      const dateText = newestDay === todayKey ? '' : formatDate(newest.time)
+      return h('div', { className: 'grb-group' },
+        h(GroupHead, { turn: group.turn, dateText, t }),
+        group.records.map(record => h(Row, {
+          key: record.id,
+          record,
+          t,
+          timeText: rowTime(record, newestDay),
+          summary: summarize(record),
+          isNew: freshIds.has(record.id),
+        })),
       )
     }
 
     function EmptyState(props) {
       const t = props.t
       const icon = h('svg', {
-        className: 'grb-empty-icon', width: 40, height: 40, viewBox: '0 0 24 24',
+        className: 'grb-empty-icon', width: 24, height: 24, viewBox: '0 0 24 24',
         fill: 'none', stroke: 'currentColor', strokeWidth: 1.4,
         'aria-hidden': 'true',
       },
@@ -130,15 +252,72 @@ window.__ModuleLoader__.load({
 
     function Board(props) {
       const t = props.t
-      const records = props.useProjection('goalRecordBoard') ?? []
+      const projection = props.useProjection('goalRecordBoard')
+      const records = Array.isArray(projection) ? projection : NO_RECORDS
+      const seenIds = React.useRef(new Set())
+      const hasBaseline = React.useRef(false)
+      const timers = React.useRef(new Set())
+      const [freshIds, setFreshIds] = React.useState(() => new Set())
+
+      // Mark records that appeared after the baseline; the first defined
+      // projection (an empty array included) only records the baseline. A
+      // projection that is not an array yet, or stops being one, resets that
+      // readiness so records already present when it finally arrives are not
+      // flashed. Each batch of new ids clears itself 1.4s later, matching the
+      // highlight animation (reduced motion holds it steady for that time).
+      React.useEffect(() => {
+        if (!Array.isArray(projection)) {
+          hasBaseline.current = false
+          seenIds.current = new Set()
+          return
+        }
+        const ids = new Set(projection.map(record => record.id))
+        const fresh = []
+        if (hasBaseline.current) {
+          for (const id of ids) {
+            if (!seenIds.current.has(id)) fresh.push(id)
+          }
+        }
+        hasBaseline.current = true
+        seenIds.current = ids
+        if (fresh.length === 0) return
+        setFreshIds(previous => {
+          const next = new Set(previous)
+          for (const id of fresh) next.add(id)
+          return next
+        })
+        const timer = setTimeout(() => {
+          timers.current.delete(timer)
+          setFreshIds(previous => {
+            const next = new Set(previous)
+            for (const id of fresh) next.delete(id)
+            return next
+          })
+        }, 1400)
+        timers.current.add(timer)
+      }, [projection])
+
+      React.useEffect(() => () => {
+        for (const timer of timers.current) clearTimeout(timer)
+        timers.current.clear()
+      }, [])
+
+      const todayKey = dayKey(Date.now())
       return h('div', { className: 'grb-root' },
         h('div', { className: 'grb-scroll' },
           records.length === 0
             ? h(EmptyState, { t })
             : [
                 h('div', { key: 'count', className: 'grb-count' }, countText(t, records)),
-                h('div', { key: 'list', className: 'grb-list' }, records.map((record, index) =>
-                  h(Row, { key: record.id, record, t, index }))),
+                groupByTurn(records).map(group => h(Group, {
+                  // A group only ever gains records at its newest end, so the
+                  // oldest record keeps the key stable across updates.
+                  key: group.turn + ':' + group.records[group.records.length - 1].id,
+                  group,
+                  t,
+                  todayKey,
+                  freshIds,
+                })),
               ],
         ),
       )
@@ -192,8 +371,7 @@ window.__ModuleLoader__.load({
       const sidebarRight = ctx.get('sidebarRight')
       const tabs = ctx.get('sidebarRightTabs')
 
-      // Styles: inherit the host theme through --dsw-alias-* tokens. The font
-      // stack uses system fonts only; no font files are bundled or loaded.
+      // Styles: inherit the host theme and font through --dsw-alias-* tokens.
       ctx.effect(() => {
         const tagId = TAB_ID + '/board'
         let tag = document.querySelector('style[data-plugin-css="' + tagId + '"]')
@@ -202,35 +380,40 @@ window.__ModuleLoader__.load({
           tag.dataset.plugin = TAB_ID
           tag.dataset.pluginCss = tagId
           tag.textContent = [
-            ".grb-root{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}",
-            ".grb-scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:12px 12px 28px}",
-            ".grb-count{padding:0 8px;margin-bottom:4px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}",
-            ".grb-list,.grb-empty{position:relative}",
-            ".grb-list{display:flex;flex-direction:column}",
-            ".grb-row{border-radius:10px}",
-            ".grb-row-head{display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;padding:10px 8px;border:0;border-radius:10px;background:transparent;color:inherit;font-family:inherit;font-size:13px;font-weight:500;text-align:left;cursor:pointer}",
-            "@media (hover:hover){.grb-row-head:hover{background:var(--dsw-alias-bg-layer-2)}}",
-            ".grb-row-head:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}",
-            ".grb-row-index{display:inline-flex;align-items:center;justify-content:center;flex:none;min-width:22px;height:22px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:400}",
-            ".grb-row-heading{flex:1;min-width:0}",
-            ".grb-row-chevron{flex:none;color:var(--dsw-alias-label-tertiary);font-size:15px;line-height:1}",
-            ".grb-drawer{margin:0 8px 8px;padding:2px 6px 10px;border-top:.5px solid var(--dsw-alias-border-l2);border-bottom:.5px solid var(--dsw-alias-border-l2);animation:grb-open .16s ease-out}",
-            ".grb-row-ref{padding:8px 2px 2px;font-size:11px;color:var(--dsw-alias-label-tertiary)}",
-            "@keyframes grb-open{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}",
-            ".grb-field{padding:10px 0}",
-            ".grb-field + .grb-field{border-top:.5px solid var(--dsw-alias-border-l1)}",
-            ".grb-field-label{font-size:11px;font-weight:600;color:var(--dsw-alias-label-secondary);letter-spacing:.06em}",
-            ".grb-field-text{margin-top:3px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12.5px;color:var(--dsw-alias-label-secondary)}",
-            ".grb-empty{padding:64px 24px;text-align:center;display:flex;flex-direction:column;align-items:center}",
-            ".grb-empty-icon{color:var(--dsw-alias-label-tertiary);margin-bottom:14px}",
-            ".grb-empty-title{font-size:13px;color:var(--dsw-alias-label-secondary);line-height:1.7}",
-            ".grb-empty-hint{max-width:280px;margin-top:6px;font-size:12px;color:var(--dsw-alias-label-tertiary);line-height:1.6}",
-            ".grb-header-action{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:3px 6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}",
-            ".grb-header-action svg{flex:none;display:block}",
-            ".grb-header-action:focus-visible{color:var(--dsw-alias-label-secondary)}",
-            "@media (hover:hover){.grb-header-action:hover{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover)}}",
-            ".grb-header-action:active{background:var(--dsw-alias-interactive-bg-active)}",
-            "@container (max-width:460px){.grb-header-action-label{display:none}.grb-header-action{box-sizing:border-box;width:28px;height:28px;padding:0;justify-content:center;color:var(--dsw-alias-label-secondary)}}",
+            '.grb-root{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}',
+            '.grb-scroll{--dsh-scrollbar-width:9px;--dsh-scrollbar-thumb-border:2px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:12px 12px 28px}',
+            '.grb-count{padding:0 8px;margin-bottom:4px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}',
+            '.grb-group-head{position:sticky;top:0;z-index:1;display:flex;justify-content:space-between;align-items:baseline;padding:12px 8px 6px;background:var(--dsw-alias-bg-base);border-bottom:.5px solid var(--dsw-alias-border-l1)}',
+            '.grb-group-title{font-size:12px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
+            '.grb-group-date{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+            '.grb-row{border-radius:var(--dsw-radius-sm)}',
+            '.grb-row-head{display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;padding:7px 8px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;font:inherit;font-size:13px;line-height:22px;text-align:left;cursor:pointer}',
+            '@media (hover:hover){.grb-row-head:hover{background:var(--dsw-alias-interactive-bg-hover)}}',
+            '.grb-row-head:active{background:var(--dsw-alias-interactive-bg-active)}',
+            '.grb-row-head:focus-visible{outline:2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));outline-offset:-2px}',
+            '.grb-time{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+            '.grb-summary{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-primary)}',
+            '.grb-chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
+            '.grb-chevron-open{transform:rotate(180deg)}',
+            '@keyframes grb-highlight{from{background:var(--dsw-alias-interactive-bg-active)}to{background:transparent}}',
+            '.grb-row-new{animation:grb-highlight 1.4s ease-out}',
+            '@keyframes grb-open{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}',
+            '.grb-drawer{padding:2px 8px 10px;animation:grb-open .16s ease-out}',
+            '.grb-drawer[hidden]{display:none}',
+            '.grb-field + .grb-field{margin-top:10px}',
+            '.grb-field-label{font-size:12px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
+            '.grb-field-text{margin-top:2px;font-size:13px;line-height:22px;color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere}',
+            '@media (prefers-reduced-motion:reduce){.grb-row-new{animation:none;background:var(--dsw-alias-interactive-bg-active)}}',
+            '.grb-empty{display:flex;flex-direction:column;align-items:center;padding:48px 20px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:14px}',
+            '.grb-empty-icon{margin-bottom:12px;color:var(--dsw-alias-label-caption)}',
+            '.grb-empty-title{margin-bottom:8px;font-size:14px;line-height:1.6;font-weight:400;color:var(--dsw-alias-label-tertiary)}',
+            '.grb-empty-hint{max-width:280px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}',
+            '.grb-header-action{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:3px 6px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer}',
+            '.grb-header-action svg{flex:none;display:block}',
+            '.grb-header-action:focus-visible{color:var(--dsw-alias-label-secondary)}',
+            '@media (hover:hover){.grb-header-action:hover{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover)}}',
+            '.grb-header-action:active{background:var(--dsw-alias-interactive-bg-active)}',
+            '@container (max-width:460px){.grb-header-action-label{display:none}.grb-header-action{box-sizing:border-box;width:28px;height:28px;padding:0;justify-content:center;color:var(--dsw-alias-label-secondary)}}',
           ].join('\n')
           document.head.appendChild(tag)
         }

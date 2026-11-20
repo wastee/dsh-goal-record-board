@@ -19,6 +19,8 @@ window.__ModuleLoader__.load({
     const NS = 'goalRecordBoard'
     /** Stable empty list for renders without a projection. */
     const NO_RECORDS = []
+    /** Target record count for the first batch and for each "load more" click. */
+    const RECORDS_PER_PAGE = 10
 
     const zh = {
       menu: '目标记录看板',
@@ -32,6 +34,9 @@ window.__ModuleLoader__.load({
       roundHeader: '第 {n} 轮',
       unknownRound: '轮次未知',
       countLine: '{n} 条记录 · {m} 轮',
+      countLinePartial: '已显示 {r} / {n} 条记录 · {m} 轮',
+      loadMore: '加载更多',
+      endOfList: '没有更早的记录了',
     }
     const en = {
       menu: 'Goal Record Board',
@@ -45,6 +50,9 @@ window.__ModuleLoader__.load({
       roundHeader: 'Round {n}',
       unknownRound: 'Unknown round',
       countLine: '{n} records · {m} rounds',
+      countLinePartial: 'Showing {r} of {n} records · {m} rounds',
+      loadMore: 'Load more',
+      endOfList: 'No earlier records',
     }
     const dicts = { zh, en, ja: en, es: en, fr: en, de: en, ru: en, pt: en }
 
@@ -109,6 +117,51 @@ window.__ModuleLoader__.load({
       return groups
     }
 
+    /**
+     * Whole groups from index `start` onward until at least `minimum` records
+     * are covered. A turn is never split across batches; running out of groups
+     * returns whatever is left.
+     */
+    function takeBatch(groups, start, minimum) {
+      const batch = []
+      let total = 0
+      for (let index = start; index < groups.length && total < minimum; index += 1) {
+        const group = groups[index]
+        batch.push(group)
+        total += group.records.length
+      }
+      return batch
+    }
+
+    /**
+     * Newest-first groups up to and including the group that holds `pivotId`;
+     * null when that record is gone and the caller must fall back to the first
+     * batch.
+     */
+    function groupsThroughPivot(groups, pivotId) {
+      if (typeof pivotId !== 'string') return null
+      for (let index = 0; index < groups.length; index += 1) {
+        if (groups[index].records.some(record => record.id === pivotId)) {
+          return groups.slice(0, index + 1)
+        }
+      }
+      return null
+    }
+
+    /** Total records across a list of turn groups. */
+    function sumRecords(groups) {
+      let total = 0
+      for (const group of groups) total += group.records.length
+      return total
+    }
+
+    /** Id of the oldest record in a newest-first batch: the shown boundary. */
+    function lastRecordId(groups) {
+      const group = groups[groups.length - 1]
+      if (group === undefined) return null
+      return group.records[group.records.length - 1].id
+    }
+
     /** Collapse text to one line: newlines become spaces and outer blanks go away. */
     function singleLine(text) {
       return typeof text === 'string' ? text.replace(/\s*\n\s*/g, ' ').trim() : ''
@@ -133,6 +186,15 @@ window.__ModuleLoader__.load({
     function countText(t, records) {
       const counts = countRecords(records)
       return String(t('countLine'))
+        .replace('{n}', String(counts.total))
+        .replace('{m}', String(counts.rounds))
+    }
+
+    /** Partial count line: shown records, total records and total rounds. */
+    function partialCountText(t, shownRecords, records) {
+      const counts = countRecords(records)
+      return String(t('countLinePartial'))
+        .replace('{r}', String(shownRecords))
         .replace('{n}', String(counts.total))
         .replace('{m}', String(counts.rounds))
     }
@@ -167,10 +229,19 @@ window.__ModuleLoader__.load({
     }
 
     function Row(props) {
-      const { record, t, timeText, summary, isNew } = props
+      const { record, t, timeText, summary, isNew, focusId, onFocusHandled } = props
       const [open, setOpen] = React.useState(false)
       const drawerId = React.useId()
       const headRef = React.useRef(null)
+
+      // "Load more" moves focus to the first newly shown row. The parent clears
+      // focusId right after, so this runs once and later renders leave focus be.
+      React.useEffect(() => {
+        if (focusId !== record.id) return
+        const head = headRef.current
+        if (head !== null) head.focus()
+        onFocusHandled()
+      }, [focusId, record.id, onFocusHandled])
 
       // Escape collapses an open row, moves focus back to its button, and stops
       // the event so the host page does not also act on it. A collapsed row
@@ -216,7 +287,7 @@ window.__ModuleLoader__.load({
     }
 
     function Group(props) {
-      const { group, t, todayKey, freshIds } = props
+      const { group, t, todayKey, freshIds, focusId, onFocusHandled } = props
       const newest = group.records[0]
       const newestDay = dayKey(newest.time)
       const dateText = newestDay === todayKey ? '' : formatDate(newest.time)
@@ -229,6 +300,8 @@ window.__ModuleLoader__.load({
           timeText: rowTime(record, newestDay),
           summary: summarize(record),
           isNew: freshIds.has(record.id),
+          focusId,
+          onFocusHandled,
         })),
       )
     }
@@ -258,6 +331,15 @@ window.__ModuleLoader__.load({
       const hasBaseline = React.useRef(false)
       const timers = React.useRef(new Set())
       const [freshIds, setFreshIds] = React.useState(() => new Set())
+      // `pivotId` is the oldest record currently shown; it decides where the
+      // visible list ends. `pinned` remembers the first batch once, so records
+      // that arrive later only extend the newest end instead of pushing rows
+      // the user already read out of view.
+      const [pivotId, setPivotId] = React.useState(null)
+      const [focusId, setFocusId] = React.useState(null)
+      const pinned = React.useRef(null)
+      // Stable callback: Row effects depend on it and must not re-run each render.
+      const onFocusHandled = React.useCallback(() => { setFocusId(null) }, [])
 
       // Mark records that appeared after the baseline; the first defined
       // projection (an empty array included) only records the baseline. A
@@ -302,14 +384,54 @@ window.__ModuleLoader__.load({
         timers.current.clear()
       }, [])
 
+      const groups = groupByTurn(records)
+      const firstBatch = takeBatch(groups, 0, RECORDS_PER_PAGE)
+
+      // Pin the first batch the first time a non-empty projection arrives. Its
+      // boundary never moves afterwards, so a live update cannot hide records
+      // the user already saw.
+      React.useEffect(() => {
+        if (pinned.current !== null || records.length === 0) return
+        const currentGroups = groupByTurn(records)
+        const batch = takeBatch(currentGroups, 0, RECORDS_PER_PAGE)
+        const boundary = lastRecordId(batch)
+        if (boundary === null) return
+        pinned.current = { complete: batch.length === currentGroups.length }
+        setPivotId(boundary)
+      }, [records])
+
+      // A replaced projection can lose the pivot; fall back to the first batch
+      // instead of failing.
+      const shownGroups = groupsThroughPivot(groups, pivotId) ?? firstBatch
+      const shownRecords = sumRecords(shownGroups)
+      const allShown = shownGroups.length === groups.length
+      const initialComplete = pinned.current === null
+        ? firstBatch.length === groups.length
+        : pinned.current.complete
+
+      // One click appends whole older groups until roughly another page of records.
+      const loadMore = () => {
+        const batch = takeBatch(groups, shownGroups.length, RECORDS_PER_PAGE)
+        const boundary = lastRecordId(batch)
+        if (boundary === null) return
+        setPivotId(boundary)
+        // The first row of a newest-first batch is that group's newest record.
+        setFocusId(batch[0].records[0].id)
+      }
+
       const todayKey = dayKey(Date.now())
       return h('div', { className: 'grb-root' },
         h('div', { className: 'grb-scroll' },
           records.length === 0
             ? h(EmptyState, { t })
             : [
-                h('div', { key: 'count', className: 'grb-count' }, countText(t, records)),
-                groupByTurn(records).map(group => h(Group, {
+                h('div', {
+                  key: 'count',
+                  className: 'grb-count',
+                  role: 'status',
+                  'aria-atomic': 'true',
+                }, allShown ? countText(t, records) : partialCountText(t, shownRecords, records)),
+                shownGroups.map(group => h(Group, {
                   // A group only ever gains records at its newest end, so the
                   // oldest record keeps the key stable across updates.
                   key: group.turn + ':' + group.records[group.records.length - 1].id,
@@ -317,7 +439,19 @@ window.__ModuleLoader__.load({
                   t,
                   todayKey,
                   freshIds,
+                  focusId,
+                  onFocusHandled,
                 })),
+                allShown ? null : h('div', { key: 'more', className: 'grb-more' },
+                  h('button', {
+                    type: 'button',
+                    className: 'grb-more-button',
+                    onClick: loadMore,
+                  }, t('loadMore')),
+                ),
+                allShown && !initialComplete
+                  ? h('div', { key: 'end', className: 'grb-end' }, t('endOfList'))
+                  : null,
               ],
         ),
       )
@@ -383,6 +517,10 @@ window.__ModuleLoader__.load({
             '.grb-root{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}',
             '.grb-scroll{--dsh-scrollbar-width:9px;--dsh-scrollbar-thumb-border:2px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:12px 12px 28px}',
             '.grb-count{padding:0 8px;margin-bottom:4px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}',
+            '.grb-more{display:flex;justify-content:center;padding:8px 8px 4px}',
+            '.grb-more-button{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:.5px solid transparent;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;cursor:pointer;box-shadow:inset 0 0 0 var(--dsh-hairline-width,.5px) var(--dsh-button-outline-color,var(--dsw-alias-border-l3,var(--dsw-alias-border-l2)))}',
+            '@media (hover:hover){.grb-more-button:hover{background:var(--dsw-alias-interactive-bg-hover)}}',
+            '.grb-end{padding:8px;text-align:center;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}',
             '.grb-group-head{position:sticky;top:0;z-index:1;display:flex;justify-content:space-between;align-items:baseline;padding:12px 8px 6px;background:var(--dsw-alias-bg-base);border-bottom:.5px solid var(--dsw-alias-border-l1)}',
             '.grb-group-title{font-size:12px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
             '.grb-group-date{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',

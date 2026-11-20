@@ -1,6 +1,6 @@
 {
   "name": "@wastee/dsh-goal-record-board",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "把目标每个轮次遇到的问题、采用的方案和取得的成果记录到右栏看板，点击进入抽屉查看。",
   "type": "module",
   "scripts": {

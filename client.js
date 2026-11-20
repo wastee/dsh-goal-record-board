@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
       solution: '什么方案',
       result: '什么成果',
       guide: '每轮的什么问题、什么方案、什么成果',
+      countLine: '{n} 条记录 · {m} 轮',
     }
     const en = {
       menu: 'Goal Record Board',
@@ -40,6 +41,7 @@ window.__ModuleLoader__.load({
       solution: 'Solution',
       result: 'Result',
       guide: 'Problem, solution and result for each round',
+      countLine: '{n} records · {m} rounds',
     }
     const dicts = { zh, en, ja: en, es: en, fr: en, de: en, ru: en, pt: en }
 
@@ -66,6 +68,15 @@ window.__ModuleLoader__.load({
       const pad = value => String(value).padStart(2, '0')
       return pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' '
         + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+    }
+
+    /** Count line text: total records plus distinct turns (unknown turn 0 excluded). */
+    function countText(t, records) {
+      const turns = new Set()
+      for (const record of records) {
+        if (record.turn !== 0) turns.add(record.turn)
+      }
+      return String(t('countLine')).replace('{n}', String(records.length)).replace('{m}', String(turns.size))
     }
 
     function Field(props) {
@@ -121,10 +132,15 @@ window.__ModuleLoader__.load({
       const t = props.t
       const records = props.useProjection('goalRecordBoard') ?? []
       return h('div', { className: 'grb-root' },
-        records.length === 0
-          ? h(EmptyState, { t })
-          : h('div', { className: 'grb-list' }, records.map((record, index) =>
-              h(Row, { key: record.id, record, t, index }))),
+        h('div', { className: 'grb-scroll' },
+          records.length === 0
+            ? h(EmptyState, { t })
+            : [
+                h('div', { key: 'count', className: 'grb-count' }, countText(t, records)),
+                h('div', { key: 'list', className: 'grb-list' }, records.map((record, index) =>
+                  h(Row, { key: record.id, record, t, index }))),
+              ],
+        ),
       )
     }
 
@@ -186,7 +202,9 @@ window.__ModuleLoader__.load({
           tag.dataset.plugin = TAB_ID
           tag.dataset.pluginCss = tagId
           tag.textContent = [
-            ".grb-root{--grb-font:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei','Helvetica Neue',Helvetica,Arial,sans-serif;position:relative;min-height:100%;box-sizing:border-box;padding:12px 12px 32px;color:var(--dsw-alias-label-primary);font-family:var(--grb-font);font-size:13px;line-height:1.6;background:var(--dsw-alias-bg-base)}",
+            ".grb-root{display:flex;flex-direction:column;height:100%;min-height:0;overflow:hidden;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}",
+            ".grb-scroll{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:12px 12px 28px}",
+            ".grb-count{padding:0 8px;margin-bottom:4px;font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary)}",
             ".grb-list,.grb-empty{position:relative}",
             ".grb-list{display:flex;flex-direction:column}",
             ".grb-row{border-radius:10px}",

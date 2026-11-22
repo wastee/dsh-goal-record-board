@@ -1,7 +1,7 @@
 {
   "name": "@wastee/dsh-goal-record-board",
-  "version": "1.0.2",
-  "description": "把目标每个轮次遇到的问题、采用的方案和取得的成果记录到右栏看板，点击进入抽屉查看。",
+  "version": "1.0.3",
+  "description": "把每个轮次的最终回答显示到右栏看板；列表只显示第一段，点开看全文。",
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js"
@@ -54,7 +54,6 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "zod": "^4.6.7"
   }
 }

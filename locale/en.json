@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Goal Record Board",
-    "description": "Records the problem, solution and result of each goal round in a session-side board. A checklist button in the session header opens the board; click a record to expand it."
+    "description": "Shows each round's final answer in a session-side board. The list shows the first paragraph; click a record to expand the full answer. A checklist button in the session header opens the board."
   }
 }

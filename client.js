@@ -5,8 +5,9 @@
  * right-sidebar tab.
  * The tab body reads the goalRecordBoard projection, the per-session list
  * published by the Host projection. Records are grouped by turn, newest first;
- * each row is collapsed to a one-line problem summary and opens a drawer with
- * the full problem, solution and result.
+ * each record is one round's final assistant answer. The list shows the first
+ * paragraph; clicking a record expands the full answer inside the board. No
+ * model call is made for the summary or the expansion.
  */
 window.__ModuleLoader__.load({
   id: '@wastee/dsh-goal-record-board',
@@ -19,22 +20,21 @@ window.__ModuleLoader__.load({
     const NS = 'goalRecordBoard'
     /** Stable empty list for renders without a projection. */
     const NO_RECORDS = []
-    /** Target record count for the first batch and for each "load more" click. */
-    const RECORDS_PER_PAGE = 10
+    /** Target round count for the first batch and for each "load more" click. */
+    const ROUNDS_PER_PAGE = 10
 
     const zh = {
       menu: '目标记录看板',
       title: '目标记录看板',
       empty: '还没有记录',
-      emptyHint: '目标每轮结束后，遇到的问题、采用的方案和取得的成果会记录在这里。',
-      guide: '每轮的什么问题、什么方案、什么成果',
-      problem: '问题',
-      solution: '方案',
-      result: '成果',
+      emptyHint: '每轮结束后，这一轮的最终回答会出现在这里；列表只显示第一段，点开看全文。',
+      guide: '每轮最终回答的摘要，点开看全文',
+      expand: '展开全文',
+      collapse: '收起',
       roundHeader: '第 {n} 轮',
       unknownRound: '轮次未知',
-      countLine: '{n} 条记录 · {m} 轮',
-      countLinePartial: '已显示 {r} / {n} 条记录 · {m} 轮',
+      countLine: '共 {m} 轮',
+      countLinePartial: '已显示 {r} / {m} 轮',
       loadMore: '加载更多',
       endOfList: '没有更早的记录了',
     }
@@ -42,15 +42,14 @@ window.__ModuleLoader__.load({
       menu: 'Goal Record Board',
       title: 'Goal Record Board',
       empty: 'No records yet',
-      emptyHint: 'When a goal finishes each round, the problem, solution and result it produced are recorded here.',
-      guide: 'Problem, solution and result for each round',
-      problem: 'Problem',
-      solution: 'Solution',
-      result: 'Result',
+      emptyHint: 'When each round ends, its final answer appears here. The list shows the first paragraph; click to read the full answer.',
+      guide: 'A summary of each round\'s final answer; click to read the full answer',
+      expand: 'Show full answer',
+      collapse: 'Collapse',
       roundHeader: 'Round {n}',
       unknownRound: 'Unknown round',
-      countLine: '{n} records · {m} rounds',
-      countLinePartial: 'Showing {r} of {n} records · {m} rounds',
+      countLine: '{m} rounds total',
+      countLinePartial: 'Showing {r} of {m} rounds',
       loadMore: 'Load more',
       endOfList: 'No earlier records',
     }
@@ -118,17 +117,13 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Whole groups from index `start` onward until at least `minimum` records
-     * are covered. A turn is never split across batches; running out of groups
-     * returns whatever is left.
+     * Whole groups from index `start` onward, up to `count` groups. A turn is
+     * never split across batches; running out of groups returns what is left.
      */
-    function takeBatch(groups, start, minimum) {
+    function takeBatch(groups, start, count) {
       const batch = []
-      let total = 0
-      for (let index = start; index < groups.length && total < minimum; index += 1) {
-        const group = groups[index]
-        batch.push(group)
-        total += group.records.length
+      for (let index = start; index < groups.length && batch.length < count; index += 1) {
+        batch.push(groups[index])
       }
       return batch
     }
@@ -148,13 +143,6 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    /** Total records across a list of turn groups. */
-    function sumRecords(groups) {
-      let total = 0
-      for (const group of groups) total += group.records.length
-      return total
-    }
-
     /** Id of the oldest record in a newest-first batch: the shown boundary. */
     function lastRecordId(groups) {
       const group = groups[groups.length - 1]
@@ -162,58 +150,38 @@ window.__ModuleLoader__.load({
       return group.records[group.records.length - 1].id
     }
 
-    /** Collapse text to one line: newlines become spaces and outer blanks go away. */
-    function singleLine(text) {
-      return typeof text === 'string' ? text.replace(/\s*\n\s*/g, ' ').trim() : ''
+    /**
+     * The summary is the first paragraph: text up to the first blank line.
+     * A final answer without a blank line stays one paragraph and needs no
+     * expansion control.
+     */
+    function firstParagraph(text) {
+      if (typeof text !== 'string') return ''
+      const normalized = text.replace(/\r\n/g, '\n').trim()
+      if (normalized === '') return ''
+      const breakIndex = normalized.search(/\n[ \t]*\n/)
+      return breakIndex === -1 ? normalized : normalized.slice(0, breakIndex).trim()
     }
 
-    /** Collapsed-row summary: the problem, or the result when the problem is empty. */
-    function summarize(record) {
-      const problem = singleLine(record.problem)
-      return problem !== '' ? problem : singleLine(record.result)
+    /** Fill the count-line template with the number of rounds. */
+    function countText(t, rounds) {
+      return String(t('countLine')).replace('{m}', String(rounds))
     }
 
-    /** Total records and distinct turns; turn 0 means unknown and is not counted. */
-    function countRecords(records) {
-      const turns = new Set()
-      for (const record of records) {
-        if (record.turn !== 0) turns.add(record.turn)
-      }
-      return { total: records.length, rounds: turns.size }
-    }
-
-    /** Fill the count-line template with this projection's two numbers. */
-    function countText(t, records) {
-      const counts = countRecords(records)
-      return String(t('countLine'))
-        .replace('{n}', String(counts.total))
-        .replace('{m}', String(counts.rounds))
-    }
-
-    /** Partial count line: shown records, total records and total rounds. */
-    function partialCountText(t, shownRecords, records) {
-      const counts = countRecords(records)
+    /** Partial count line: shown rounds and total rounds. */
+    function partialCountText(t, shownRounds, totalRounds) {
       return String(t('countLinePartial'))
-        .replace('{r}', String(shownRecords))
-        .replace('{n}', String(counts.total))
-        .replace('{m}', String(counts.rounds))
+        .replace('{r}', String(shownRounds))
+        .replace('{m}', String(totalRounds))
     }
 
-    /** Row clock; a record on another day than its group's newest also shows MM-DD. */
+    /** Clock for one report; a record on another day than its group's newest also shows MM-DD. */
     function rowTime(record, groupDay) {
       const clock = formatClock(record.time)
       if (dayKey(record.time) === groupDay) return clock
       const date = formatDate(record.time)
       if (date === '') return clock
       return clock === '' ? date : date + ' ' + clock
-    }
-
-    function Field(props) {
-      const { label, text } = props
-      return h('div', { className: 'grb-field' },
-        h('div', { className: 'grb-field-label' }, label),
-        h('div', { className: 'grb-field-text' }, text),
-      )
     }
 
     /** Sticky turn heading; the date appears only when the group is not from today. */
@@ -228,60 +196,65 @@ window.__ModuleLoader__.load({
       )
     }
 
-    function Row(props) {
-      const { record, t, timeText, summary, isNew, focusId, onFocusHandled } = props
-      const [open, setOpen] = React.useState(false)
-      const drawerId = React.useId()
-      const headRef = React.useRef(null)
+    /**
+     * One round report: the first paragraph is the summary. Clicking the
+     * summary, or the expand label, reveals the full final answer in place.
+     * When the final answer has only one paragraph there is nothing to expand.
+     */
+    function Report(props) {
+      const { record, t, timeText, isNew, focusId, onFocusHandled } = props
+      const rootRef = React.useRef(null)
+      const [expanded, setExpanded] = React.useState(false)
 
-      // "Load more" moves focus to the first newly shown row. The parent clears
-      // focusId right after, so this runs once and later renders leave focus be.
+      // "Load more" moves focus to the first newly shown report. The parent
+      // clears focusId right after, so this runs once and later renders leave
+      // focus be.
       React.useEffect(() => {
         if (focusId !== record.id) return
-        const head = headRef.current
-        if (head !== null) head.focus()
+        const root = rootRef.current
+        if (root !== null) root.focus()
         onFocusHandled()
       }, [focusId, record.id, onFocusHandled])
 
-      // Escape collapses an open row, moves focus back to its button, and stops
-      // the event so the host page does not also act on it. A collapsed row
-      // leaves Escape alone.
-      const handleKeyDown = event => {
-        if (event.key !== 'Escape' || !open) return
-        event.stopPropagation()
-        setOpen(false)
-        const head = headRef.current
-        if (head !== null) head.focus()
+      const full = typeof record.text === 'string'
+        ? record.text.replace(/\r\n/g, '\n').trim()
+        : ''
+      const summary = firstParagraph(full)
+      const canExpand = full !== summary
+      const shown = expanded ? full : summary
+      const toggle = () => { if (canExpand) setExpanded(value => !value) }
+      const onAnswerKeyDown = event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        toggle()
       }
-
+      const answerProps = canExpand
+        ? {
+            role: 'button',
+            tabIndex: 0,
+            className: 'grb-answer-button',
+            'aria-expanded': expanded,
+            title: t(expanded ? 'collapse' : 'expand'),
+            onClick: toggle,
+            onKeyDown: onAnswerKeyDown,
+          }
+        : { className: 'grb-answer-static' }
       return h('div', {
-        className: isNew ? 'grb-row grb-row-new' : 'grb-row',
-        onKeyDown: handleKeyDown,
+        ref: rootRef,
+        tabIndex: -1,
+        className: isNew ? 'grb-report grb-report-new' : 'grb-report',
       },
-        h('button', {
-          ref: headRef,
-          type: 'button',
-          className: 'grb-row-head',
-          'aria-expanded': open,
-          'aria-controls': drawerId,
-          onClick: () => { setOpen(value => !value) },
-        },
+        h('div', { className: 'grb-report-head' },
           h('span', { className: 'grb-time' }, timeText),
-          h('span', { className: 'grb-summary' }, summary),
-          h('svg', {
-            className: 'grb-chevron' + (open ? ' grb-chevron-open' : ''),
-            width: 14, height: 14, viewBox: '0 0 16 16',
-            fill: 'none', stroke: 'currentColor', strokeWidth: 1,
-            'aria-hidden': 'true',
-          }, h('path', { d: 'M4 6L7.29289 9.29289C7.68342 9.68342 8.31658 9.68342 8.70711 9.29289L12 6' })),
-        ),
-        // The drawer stays mounted so aria-controls always points at a real
-        // element; hidden keeps it out of layout and the accessibility tree,
-        // and removing hidden restarts the opening animation.
-        h('div', { className: 'grb-drawer', id: drawerId, hidden: !open },
-          h(Field, { label: t('problem'), text: record.problem }),
-          h(Field, { label: t('solution'), text: record.solution }),
-          h(Field, { label: t('result'), text: record.result }),
+          h('div', { className: 'grb-report-body' },
+            h('div', answerProps, h('span', { className: 'grb-answer' }, shown)),
+            canExpand ? h('button', {
+              type: 'button',
+              className: 'grb-expand',
+              'aria-expanded': expanded,
+              onClick: toggle,
+            }, expanded ? t('collapse') : t('expand')) : null,
+          ),
         ),
       )
     }
@@ -293,12 +266,11 @@ window.__ModuleLoader__.load({
       const dateText = newestDay === todayKey ? '' : formatDate(newest.time)
       return h('div', { className: 'grb-group' },
         h(GroupHead, { turn: group.turn, dateText, t }),
-        group.records.map(record => h(Row, {
+        group.records.map(record => h(Report, {
           key: record.id,
           record,
           t,
           timeText: rowTime(record, newestDay),
-          summary: summarize(record),
           isNew: freshIds.has(record.id),
           focusId,
           onFocusHandled,
@@ -338,7 +310,7 @@ window.__ModuleLoader__.load({
       const [pivotId, setPivotId] = React.useState(null)
       const [focusId, setFocusId] = React.useState(null)
       const pinned = React.useRef(null)
-      // Stable callback: Row effects depend on it and must not re-run each render.
+      // Stable callback: Report effects depend on it and must not re-run each render.
       const onFocusHandled = React.useCallback(() => { setFocusId(null) }, [])
 
       // Mark records that appeared after the baseline; the first defined
@@ -385,7 +357,7 @@ window.__ModuleLoader__.load({
       }, [])
 
       const groups = groupByTurn(records)
-      const firstBatch = takeBatch(groups, 0, RECORDS_PER_PAGE)
+      const firstBatch = takeBatch(groups, 0, ROUNDS_PER_PAGE)
 
       // Pin the first batch the first time a non-empty projection arrives. Its
       // boundary never moves afterwards, so a live update cannot hide records
@@ -393,7 +365,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (pinned.current !== null || records.length === 0) return
         const currentGroups = groupByTurn(records)
-        const batch = takeBatch(currentGroups, 0, RECORDS_PER_PAGE)
+        const batch = takeBatch(currentGroups, 0, ROUNDS_PER_PAGE)
         const boundary = lastRecordId(batch)
         if (boundary === null) return
         pinned.current = { complete: batch.length === currentGroups.length }
@@ -403,19 +375,18 @@ window.__ModuleLoader__.load({
       // A replaced projection can lose the pivot; fall back to the first batch
       // instead of failing.
       const shownGroups = groupsThroughPivot(groups, pivotId) ?? firstBatch
-      const shownRecords = sumRecords(shownGroups)
       const allShown = shownGroups.length === groups.length
       const initialComplete = pinned.current === null
         ? firstBatch.length === groups.length
         : pinned.current.complete
 
-      // One click appends whole older groups until roughly another page of records.
+      // One click appends whole older groups until another page of rounds.
       const loadMore = () => {
-        const batch = takeBatch(groups, shownGroups.length, RECORDS_PER_PAGE)
+        const batch = takeBatch(groups, shownGroups.length, ROUNDS_PER_PAGE)
         const boundary = lastRecordId(batch)
         if (boundary === null) return
         setPivotId(boundary)
-        // The first row of a newest-first batch is that group's newest record.
+        // The first report of a newest-first batch is that group's newest record.
         setFocusId(batch[0].records[0].id)
       }
 
@@ -430,7 +401,9 @@ window.__ModuleLoader__.load({
                   className: 'grb-count',
                   role: 'status',
                   'aria-atomic': 'true',
-                }, allShown ? countText(t, records) : partialCountText(t, shownRecords, records)),
+                }, allShown
+                  ? countText(t, groups.length)
+                  : partialCountText(t, shownGroups.length, groups.length)),
                 shownGroups.map(group => h(Group, {
                   // A group only ever gains records at its newest end, so the
                   // oldest record keeps the key stable across updates.
@@ -524,24 +497,22 @@ window.__ModuleLoader__.load({
             '.grb-group-head{position:sticky;top:0;z-index:1;display:flex;justify-content:space-between;align-items:baseline;padding:12px 8px 6px;background:var(--dsw-alias-bg-base);border-bottom:.5px solid var(--dsw-alias-border-l1)}',
             '.grb-group-title{font-size:12px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
             '.grb-group-date{font-size:12px;line-height:20px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
-            '.grb-row{border-radius:var(--dsw-radius-sm)}',
-            '.grb-row-head{display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;padding:7px 8px;border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;font:inherit;font-size:13px;line-height:22px;text-align:left;cursor:pointer}',
-            '@media (hover:hover){.grb-row-head:hover{background:var(--dsw-alias-interactive-bg-hover)}}',
-            '.grb-row-head:active{background:var(--dsw-alias-interactive-bg-active)}',
-            '.grb-row-head:focus-visible{outline:2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));outline-offset:-2px}',
-            '.grb-time{flex:none;font-size:12px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
-            '.grb-summary{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--dsw-alias-label-primary)}',
-            '.grb-chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
-            '.grb-chevron-open{transform:rotate(180deg)}',
+            '.grb-report{padding:0;border-radius:var(--dsw-radius-sm);scroll-margin-top:40px}',
+            '.grb-report:focus-visible{outline:2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));outline-offset:-2px}',
+            '.grb-report-head{display:flex;align-items:flex-start;gap:10px;padding:7px 8px 12px}',
+            '.grb-report-body{flex:1;min-width:0}',
+            '.grb-time{flex:none;font-size:12px;line-height:22px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}',
+            '.grb-answer-button{display:block;box-sizing:border-box;width:100%;margin:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}',
+            '.grb-answer-static{display:block;box-sizing:border-box;width:100%;margin:0;padding:0;cursor:text}',
+            '.grb-answer-button:focus-visible{outline:2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));outline-offset:2px;border-radius:var(--dsw-radius-sm)}',
+            '@media (hover:hover){.grb-answer-button:hover .grb-answer{color:var(--dsw-alias-label-secondary)}}',
+            '.grb-answer{font-size:13px;line-height:22px;color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere}',
+            '.grb-expand{display:inline-flex;align-items:center;margin:2px 0 0;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-tertiary);font:inherit;font-size:12px;line-height:20px;cursor:pointer}',
+            '.grb-expand:focus-visible{outline:2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));outline-offset:2px;border-radius:var(--dsw-radius-sm)}',
+            '@media (hover:hover){.grb-expand:hover{color:var(--dsw-alias-label-secondary)}}',
             '@keyframes grb-highlight{from{background:var(--dsw-alias-interactive-bg-active)}to{background:transparent}}',
-            '.grb-row-new{animation:grb-highlight 1.4s ease-out}',
-            '@keyframes grb-open{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}',
-            '.grb-drawer{padding:2px 8px 10px;animation:grb-open .16s ease-out}',
-            '.grb-drawer[hidden]{display:none}',
-            '.grb-field + .grb-field{margin-top:10px}',
-            '.grb-field-label{font-size:12px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary)}',
-            '.grb-field-text{margin-top:2px;font-size:13px;line-height:22px;color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere}',
-            '@media (prefers-reduced-motion:reduce){.grb-row-new{animation:none;background:var(--dsw-alias-interactive-bg-active)}}',
+            '.grb-report-new{animation:grb-highlight 1.4s ease-out}',
+            '@media (prefers-reduced-motion:reduce){.grb-report-new{animation:none;background:var(--dsw-alias-interactive-bg-active)}}',
             '.grb-empty{display:flex;flex-direction:column;align-items:center;padding:48px 20px;text-align:center;color:var(--dsw-alias-label-tertiary);font-size:14px}',
             '.grb-empty-icon{margin-bottom:12px;color:var(--dsw-alias-label-caption)}',
             '.grb-empty-title{margin-bottom:8px;font-size:14px;line-height:1.6;font-weight:400;color:var(--dsw-alias-label-tertiary)}',
